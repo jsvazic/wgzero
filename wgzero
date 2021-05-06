@@ -1,6 +1,6 @@
 #! /usr/bin/env bash
 
-CONFIGFOLDER=".wgzero"
+CONFIGFOLDER="/etc/wgzero/.wgzero"
 WG0="/etc/wireguard/wg0.conf"
 PORT=$(shuf -n 1 -i 10000-65535)
 IPv6Prefix="fd00::"
@@ -28,20 +28,21 @@ Run(){
     "qr")
         QR "$2" ;;
     *)
-        Print "Unknown command\\n" "red" ;;
+        Print "Unknown command: $1\\n" "red"
+        Print "Available commands: install | list | add <client> [client ... ] | del <client> [client...] | qr <client>\\n" "red" ;;
     esac
 }
 
 Print(){
     case "$2" in
     "red")
-        echo -en "${RED}$1${NC}";;
+        echo -en "${RED}$1${NC}" ;;
     "cyan")
-        echo -en "${CYAN}$1${NC}";;
+        echo -en "${CYAN}$1${NC}" ;;
     "orange")
-        echo -en "${ORANGE}$1${NC}";;
+        echo -en "${ORANGE}$1${NC}" ;;
     *)
-        echo -en "${GREEN}$1${NC}";;
+        echo -en "${GREEN}$1${NC}" ;;
     esac
 }
 
@@ -56,21 +57,22 @@ WriteConfig(){
 }
 
 IsRoot(){
-    if [[ ! "$EUID" -eq 0 ]]; then
-        Print "Must be run as root\\n" "red" && exit
+    if [[ ! "$EUID" -eq 0 ]]
+    then
+        Print "Must be run as root\\n" "red" && exit 1
     fi
 }
 
 CheckPackages(){
     for i in $1; do 
         if [[ ! $(command -v "$i") ]]; then
-            Print "$i: command not found, please check required packages.\\n" "red" && exit
+            Print "$i: command not found, please check required packages.\\n" "red" && exit 1
         fi
     done
 }
 
 SetInterface(){
-    INTERFACES=$(ip -json l | jq -r '.[]|.ifname' | grep -v lo)
+    INTERFACES=$(ip l | grep -oP ": (\K[0-9a-z]*)" | grep -v lo)
     DEFAULT=$(echo "$INTERFACES" | head -1)
 
     Print "Available interfaces :\\n" "cyan" && echo "$INTERFACES"
@@ -78,7 +80,7 @@ SetInterface(){
 }
 
 GetConf(){
-    grep -i "^$1" "$CONFIGFOLDER/conf" | cut -d "=" -f 2
+    grep -i "$1" "$CONFIGFOLDER/conf" | cut -d "=" -f 2
 }
 
 GeneratePrivateKey(){
@@ -98,13 +100,13 @@ Init(){
             rm -rf "$CONFIGFOLDER" "$WG0"
             ip link del wg0 2>/dev/null
         else
-            exit
+            exit 1
         fi
     fi
 
-    mkdir "$CONFIGFOLDER"
+    mkdir -p "$CONFIGFOLDER" && chmod 750 "$CONFIGFOLDER"
 
-    # Generate scripts
+   # Generate scripts
     curl -so "$CONFIGFOLDER/postup.sh" "$TEMPLATEURL/postup.sh"
     curl -so "$CONFIGFOLDER/postdown.sh" "$TEMPLATEURL/postdown.sh"
     curl -so "$WG0" "$TEMPLATEURL/wg0.conf" && chmod 600 "$WG0"
@@ -174,7 +176,7 @@ Install(){
     IPv4Addr=$(/usr/bin/ipcalc -b "$(GetConf subnet)" | grep -i hostmin | tr -s " " | cut -d " " -f 2)
 
     sed -i -e "s/SERVER/$IPv4Addr/g" -e "s#PRIVKEY#$(cat "$CONFIGFOLDER"/priv.key)#g" \
-    -e "s/PORT/$(GetConf port)/g" -e "s#CONFDIR#$(pwd)/$CONFIGFOLDER#g" -e "s/TYPE/$TYPE/g" "$WG0"
+    -e "s/PORT/$(GetConf port)/g" -e "s#CONFDIR#$CONFIGFOLDER#g" -e "s/TYPE/$TYPE/g" "$WG0"
 
     if grep -q "IPv6Prefix" "$CONFIGFOLDER/conf"; then
         SetClientIPv6
@@ -210,14 +212,15 @@ QR(){
     CFG="$CONFIGFOLDER/$1/conf"
     [ ! -f "$CFG" ] && Print "Client doesn't exist\\n" "red" && exit
 
-    Print "\\n$CFG\\n" "red"
+    Print "\\n$1.conf\\n`cat $CFG`\\n" "red"
     /usr/bin/qrencode -t ansiutf8 < "$CFG"
 }
 
 List(){
     PUBKEYS=$(grep -i "publickey" "$WG0" | tr -d " " | cut -d "=" -f 2)
-    for i in $PUBKEYS; do
-        CLIENT=$(grep -r "$i" "$CONFIGFOLDER" | cut -d "/" -f 2)
+    for i in $PUBKEYS
+    do
+        CLIENT=$(grep -r "$i" "$CONFIGFOLDER" | cut -d "/" -f 5)
         IP=$(grep -i address "$CONFIGFOLDER/$CLIENT/conf" | tr -d " " | cut -d "=" -f 2)
         Print "$CLIENT $IP $i\\n" "orange"
     done
@@ -277,7 +280,7 @@ EOF
     fi
 
     # advanced config
-    Read "DNS" "none" && [ "$VAL" != "none" ] && echo "DNS = $VAL" >> "$CONFIGFOLDER/$NAME/conf"
+    Read "DNS" "10.10.0.1" && [ "$VAL" != "none" ] && echo "DNS = $VAL" >> "$CONFIGFOLDER/$NAME/conf"
     Read "Edit allowed IPs?" "y/N"
     if [ "$VAL" == "y" ]; then
         ALLOWEDIPS=$(grep -i allowedips "$CONFIGFOLDER/$NAME/conf" | tr -d " " | cut -d "=" -f 2)
